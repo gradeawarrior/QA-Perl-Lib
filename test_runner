@@ -1,0 +1,188 @@
+#!/usr/bin/env perl
+
+use strict;
+use Data::Dump qw(dump);
+use QA::Test::TestRunner;
+use QA::Test::TestSuite;
+use Getopt::Long;
+use File::Spec;
+use JSON;
+use Test::More qw(no_plan);
+
+my ($env, $help, @parameters, $output, $savedir, $verbosity, @test_methods, @test_suites, @include_dirs, @datafiles);
+
+GetOptions(
+	'i|include-dir=s'	=> \@include_dirs,
+	'e|env=s'		=> \$env,
+	'o|output=s'		=> \$output,
+	't|test=s'		=> \@test_methods,
+	's|suite=s'		=> \@test_suites,
+	'd|datafile=s'		=> \@datafiles,
+	'v|verbosity=s'		=> \$verbosity,
+	'h|help:s'		=> \$help
+);
+
+if (defined $help) {
+    usage();
+    exit(1);
+} elsif (@ARGV == 0) {
+    print qq|[ERROR] Please pass in a TestCase File\n\n|;
+    usage();
+    exit(1);
+}
+
+foreach (@include_dirs) {
+    unshift(@INC, $_);
+}
+
+my %test_runner_params = ();
+my $json = JSON->new();
+$json->utf8(1);
+$json->relaxed(1);
+
+## Read Data Files
+foreach (@datafiles) {
+    open(INPUT, $_);
+    my @lines = <INPUT>;
+    close(INPUT);
+    my $params_json = $json->decode(join("", @lines));
+    @test_runner_params{keys %{ $params_json }} = values %{ $params_json };
+}
+
+if ($output) {
+    exit_if_unsupported_output_format($output);
+    $test_runner_params{output} = $output;
+}
+
+# Set verbosity level
+$verbosity = 'CLEAN' unless defined $verbosity;
+exit_if_unsupported_verbosity($verbosity);
+
+if ($env) {
+    $test_runner_params{env} = $env;
+}
+
+## TODO
+#if ($savedir) {
+#	$test_runner_params{savedir} = $savedir;
+#	
+#	my $uuid_generator = new Data::UUID;
+#	my $uuid = $uuid_generator->create();
+#	my $uuid_string = $uuid_generator->to_string($uuid);
+#	
+#	$test_runner_params{uuid} = $uuid_string;
+#}
+
+my $test_runner = QA::Test::TestRunner->new(debug=>$verbosity);
+$test_runner->set_parameters(%test_runner_params);
+
+my $test_suite = QA::Test::TestSuite->new();
+foreach (@ARGV) {
+    $test_suite->add_test_case_or_file($_, @test_methods);
+}
+foreach (@test_suites) {
+    $test_suite->add_test_suite_from_file($_);
+}
+
+$test_runner->run_tests($test_suite);
+exit(0);
+
+
+########################################
+########### Sub-Routines ###############
+########################################
+
+
+sub usage {
+    print <<EOF;
+Usage: $0 [-d/--datafile DATA_FILES] [-t/--test TEST] [-i/--include INCLUDE_DIRS] [-h/--help] [-v/--verbosity LEVEL] TestCase [TestCase]
+
+Examples:
+    
+        $0 -d config/imphal-config.json Test/Farmd/BasicEndpoints.pm
+        $0 -d config/imphal-config.json Test/FarmdIntegration/SendMail*
+        $0 -d config/imphal-config.json Test/FarmdIntegration/SendMail* -t ham
+        $0 -d config/imphal-config.json Test/FarmdIntegration/SendMail* -t ham spam
+        $0 -d config/imphal-config.json Test/Farmd/BasicEndpoints.pm Test/FarmdIntegration/SendMail* -t ham
+        
+Description:
+
+        Uses the Test Runner Framework which is a Perl based implementation of
+        the popular unit-test pattern xUnit. TestCases passed into framework
+        should be blessed as type QA::Test::TestCase.
+        
+Details:
+
+        -d/--datafile   A user defined configuration(s) file that will be
+            DATA_FILES  imported into each TestCase object. This is how you
+                        parameterize your variables within your script.
+                        
+        -t/--tests      An optional parameter where you can specify which tests
+            TEST        or 'test_' subroutine to execute. This can be a list
+                        of test sub-routines to execute against and uses regular
+                        expression to evaluate.
+                        
+        -i/--include    A list of include directories if your script has
+            INCLUDE     dependant perl libraries or packages that are not
+                        currently a part of default Perl paths.
+			
+	-v/--verbosity	Sets the verbosity level of your tests. CLEAN means that
+	    CLEAN	only your test subroutine will be printed if any
+	    INFO	failures occur. INFO will do the same as CLEAN, except
+	    TRACE	that if a failure occurs, then the verifications that
+	    DEBUG	lead to the failure are printed. TRACE will print
+			everything within the test subroutine call to STDOUT.
+			DEBUG will print everything including the set_up and
+			tear_down operations to STDOUT.
+                        
+        -h/--help       Prints this usage message
+        
+        TestCase        A perl module that is of type QA::Test::TestCase
+    
+EOF
+}
+
+sub exit_if_unsupported_verbosity {
+    my $verbosity = shift;
+    my @debug_levels = qw(
+	CLEAN
+	INFO
+	TRACE
+	DEBUG
+    );
+
+    my $key;
+    foreach my $level (@debug_levels) {
+        if($verbosity eq $level) {
+            return;
+        }
+    }
+
+    print STDERR "[ERROR] You supplied an unsupported verbosity level for the -v parameter.\n\n";
+    usage();
+    exit 1;
+}
+
+sub exit_if_unsupported_output_format {
+    my $output = shift;
+    my $vocabulary = { 'j' => 'json',
+                       'h' => 'html',
+                       't' => 'text',
+                       's' => 'summary',
+                       'f' => 'failed' };
+
+    my $key;
+    foreach $key (keys %$vocabulary) {
+        if($output eq $vocabulary->{$key}) {
+            return;
+        }
+    }
+
+    print STDERR "You supplied an unsupported format for the -o parameter.\n";
+    my $firstCharacter = substr $output, 0, 1;
+    my $possibleCandidate = $vocabulary->{$firstCharacter};
+    my $example = "";
+    $example = "(e.g., $output versus $possibleCandidate)" if $possibleCandidate;
+    print STDERR "Maybe you made a spelling error?  $example\n\n";
+    exit 1;
+}
